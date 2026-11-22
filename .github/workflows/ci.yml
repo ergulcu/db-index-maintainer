@@ -1,0 +1,66 @@
+# Copyright 2018 Mehmet ERGULCU
+# SPDX-License-Identifier: Apache-2.0
+
+# Unit tests on every push and pull request, and the integration tests against real databases.
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: gofmt, vet, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then echo "Run gofmt -w on:"; echo "$unformatted"; exit 1; fi
+      - run: go vet ./...
+      - name: Test (the container tests use the Docker of the runner)
+        run: go test -race ./...
+      - name: Build for Linux, Windows and macOS
+        run: |
+          for target in linux/amd64 linux/arm64 windows/amd64 darwin/arm64; do
+            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 go build -o /dev/null ./cmd/...
+          done
+      - name: License headers
+        run: |
+          missing=$(git ls-files '*.go' '*.yml' '*.yaml' '*.sql' 'Dockerfile' '*.sh' | grep -v -E '^\.mvn/' | xargs -r grep -L 'SPDX-License-Identifier' || true)
+          if [ -n "$missing" ]; then
+            echo "These files have no license header:"
+            echo "$missing"
+            exit 1
+          fi
+
+  integration:
+    name: SQL Server, PostgreSQL and Oracle
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      # The database images and their data files may not fit on the runner's free disk otherwise
+      # (Oracle stopped with "No space left on device" in datatransporter).
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Integration tests against real databases (Testcontainers)
+        run: go test -tags integration -timeout 30m ./...
